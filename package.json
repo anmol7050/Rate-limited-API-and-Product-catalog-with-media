@@ -1,0 +1,15 @@
+{
+  "name": "product-catalog-api",
+  "version": "1.0.0",
+  "description": "Product catalog REST API with media (images/videos as URLs)",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node test.js",
+    "seed": "node seed.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
