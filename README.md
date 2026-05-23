@@ -344,3 +344,228 @@ Claude (Anthropic) was used to assist with:
 - Generating the curl examples in this README
 
 All generated code was reviewed and the concurrency model (per-user mutex + double-checked locking) was verified by hand.
+
+
+
+
+Product Catalog API
+REST API for a product catalog with media (image and video URLs).
+Zero external dependencies — built entirely on Node.js built-ins (http, crypto).
+
+Quick Start
+bashnode src/server.js          # start on port 3001
+node test.js                # run 46 integration tests (starts server in-process)
+node seed.js                # create 1,000 products × 10 images (server must be running)
+node seed.js 500 5          # 500 products, 5 images each
+PORT=4000 node src/server.js
+No npm install required.
+
+Endpoints
+POST /products
+Creates a product. Media fields are optional.
+Request body:
+json{
+  "name":       "Widget A",
+  "sku":        "SKU-001",
+  "image_urls": ["https://cdn.example.com/products/sku-001/img-1.jpg"],
+  "video_urls": ["https://cdn.example.com/products/sku-001/demo.mp4"]
+}
+Success — 201 Created (full detail including URL arrays):
+json{
+  "id":            "a1b2c3d4-...",
+  "name":          "Widget A",
+  "sku":           "SKU-001",
+  "image_count":   1,
+  "video_count":   1,
+  "thumbnail_url": "https://cdn.example.com/products/sku-001/img-1.jpg",
+  "created_at":    "2025-01-01T00:00:00.000Z",
+  "image_urls":    ["https://cdn.example.com/products/sku-001/img-1.jpg"],
+  "video_urls":    ["https://cdn.example.com/products/sku-001/demo.mp4"]
+}
+Errors:
+StatusCondition400Validation failure (see Validation section)409Duplicate sku
+
+GET /products
+List endpoint — safe for grids/tables with thousands of products.
+Never returns image_urls or video_urls arrays.
+Query parameters:
+ParameterDefaultMaxNoteslimit20100Clamped to max silentlyoffset0—Negative values reset to 0
+Response — 200 OK:
+json{
+  "data": [
+    {
+      "id":            "a1b2c3d4-...",
+      "name":          "Widget A",
+      "sku":           "SKU-001",
+      "image_count":   2,
+      "video_count":   1,
+      "thumbnail_url": "https://cdn.example.com/products/sku-001/img-1.jpg",
+      "created_at":    "2025-01-01T00:00:00.000Z"
+    }
+  ],
+  "pagination": {
+    "total":    1000,
+    "limit":    20,
+    "offset":   0,
+    "has_more": true
+  }
+}
+
+GET /products/:id
+Detail endpoint — returns the full product including all URL arrays.
+Response — 200 OK:
+json{
+  "id":            "a1b2c3d4-...",
+  "name":          "Widget A",
+  "sku":           "SKU-001",
+  "image_count":   2,
+  "video_count":   1,
+  "thumbnail_url": "https://cdn.example.com/products/sku-001/img-1.jpg",
+  "created_at":    "2025-01-01T00:00:00.000Z",
+  "image_urls":    [
+    "https://cdn.example.com/products/sku-001/img-1.jpg",
+    "https://cdn.example.com/products/sku-001/img-2.jpg"
+  ],
+  "video_urls":    ["https://cdn.example.com/products/sku-001/demo.mp4"]
+}
+Errors:
+StatusCondition404Unknown id
+
+POST /products/:id/media
+Appends new media URLs to an existing product. Does not replace existing URLs.
+At least one of image_urls or video_urls must be present and non-empty.
+Request body:
+json{
+  "image_urls": ["https://cdn.example.com/products/sku-001/img-3.jpg"],
+  "video_urls": ["https://cdn.example.com/products/sku-001/demo-2.mp4"]
+}
+Response — 200 OK: Full product detail (same shape as GET /products/:id).
+Errors:
+StatusCondition400Empty body / no URLs provided / invalid URLs404Unknown id
+
+Validation Rules
+All rules are enforced on POST /products and POST /products/:id/media.
+Text fields
+FieldRulesnameRequired. Non-empty after trim. Max 500 characters.skuRequired. Non-empty after trim. Max 200 characters. Globally unique.
+URL arrays
+RuleDetailSchemaMust start with http:// or https:// (case-insensitive)StructureMust pass new URL() — valid host, no broken percent-encoding, etc.Max length2048 characters per URL (browser address-bar limit; CDN path constraint)Max per array20 URLs per array per request (applies to both image_urls and video_urls)TypeMust be strings; array items that are numbers, objects, etc. are rejected
+The 20-URL cap is a per-request limit, not a per-product cap.
+Products may accumulate unlimited URLs via multiple POST /products/:id/media calls.
+What is NOT accepted
+
+File uploads or multipart form data
+Base64-encoded images or binary bodies
+Non-HTTP/HTTPS schemes (ftp://, s3://, etc.)
+Bodies over 1 MB
+
+
+Error Envelope
+All errors follow a consistent shape:
+json{
+  "error": {
+    "status":  400,
+    "message": "Validation failed",
+    "details": [
+      "name must not be empty",
+      "image_urls[0]: URL must start with http:// or https://"
+    ]
+  }
+}
+details is only present when there is more than one specific sub-error to report.
+
+Data Model
+In-Memory Storage (current implementation)
+Three data structures live in src/storage/store.js:
+productStore  →  Map<id, ProductCore>
+mediaStore    →  Map<id, ProductMedia>
+skuIndex      →  Map<sku, id>
+ProductCore — stored for every product, accessed by list queries:
+js{
+  id:            "uuid",
+  name:          "Widget A",
+  sku:           "SKU-001",
+  image_count:   2,         // maintained counter — never requires counting the array
+  video_count:   1,
+  thumbnail_url: "https://...", // first image URL, or null
+  created_at:    "ISO8601"
+}
+ProductMedia — stored separately, only loaded on detail/media routes:
+js{
+  image_urls: ["https://cdn.example.com/..."],
+  video_urls: ["https://cdn.example.com/..."]
+}
+skuIndex — O(1) duplicate-SKU detection without a full table scan.
+How list vs detail queries differ
+QueryReads fromMedia loaded?Cost at 1,000 products × 10 imagesGET /products?limit=20productStore only✗ Never20 lightweight objectsGET /products/:idproductStore + mediaStore✓ For that one product1 core + 1 media recordPOST /products/:id/mediaBoth stores✓ For that one product1 core + 1 media record
+With 1,000 products and 10 images each (10,000 URL strings total),
+GET /products?limit=20 reads exactly 20 ProductCore objects and never
+touches mediaStore. The 9,980 unread products' URL arrays are never allocated
+in the serialisation path.
+
+Production Design Notes
+What I would change with PostgreSQL + a CDN
+Schema
+sql-- Core product — the "list table"
+CREATE TABLE products (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name          TEXT        NOT NULL CHECK (char_length(name) <= 500),
+  sku           TEXT        NOT NULL UNIQUE CHECK (char_length(sku) <= 200),
+  image_count   INT         NOT NULL DEFAULT 0,
+  video_count   INT         NOT NULL DEFAULT 0,
+  thumbnail_url TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Media — one row per URL; never JOINed in list queries
+CREATE TABLE product_media (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id  UUID        NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  media_type  TEXT        NOT NULL CHECK (media_type IN ('image', 'video')),
+  url         TEXT        NOT NULL CHECK (char_length(url) <= 2048),
+  position    INT         NOT NULL DEFAULT 0,  -- ordering within type
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ON product_media(product_id, media_type, position);
+Why this mirrors the in-memory split
+
+GET /products?limit=N becomes SELECT … FROM products LIMIT N OFFSET M —
+never touches product_media. Query time is constant regardless of media volume.
+GET /products/:id adds one WHERE product_id = $1 query on product_media
+which is index-covered and returns only that product's rows.
+image_count and video_count are denormalised counters updated with the
+same transaction that inserts rows in product_media, keeping list queries
+aggregation-free.
+
+CDN integration
+
+Store only the CDN path key (e.g. products/sku-001/img-1.jpg), not the full URL.
+Build the full URL at response time using an environment variable prefix
+(CDN_BASE_URL). This lets you change CDN providers without a data migration.
+thumbnail_url in products would store the path key too, resolved at read time.
+
+Additional production concerns
+
+Add a deleted_at (soft-delete) column with a partial index so that WHERE deleted_at IS NULL stays fast.
+Enforce the per-request URL cap in the API layer (as now); enforce a per-product cap via a database CHECK constraint or trigger to prevent unbounded growth.
+Use a database sequence or RETURNING id on INSERT rather than application-generated UUIDs to avoid unlikely but possible collisions under concurrent load.
+Rate-limit media-append calls per product to prevent a single product from consuming disproportionate storage.
+
+
+File Structure
+product-catalog-api/
+├── src/
+│   ├── server.js              # HTTP server, routing entry point
+│   ├── routes/
+│   │   └── products.js        # All four product endpoints
+│   ├── storage/
+│   │   └── store.js           # productStore, mediaStore, skuIndex
+│   ├── validators/
+│   │   └── product.js         # All validation logic (documented inline)
+│   └── utils/
+│       ├── http.js            # readJson, sendJson, sendError, parseQuery
+│       └── id.js              # UUID v4 generator (crypto built-in)
+├── test.js                    # 46 integration tests (no test framework)
+├── seed.js                    # Optional: creates N products × M images
+├── package.json
+└── README.md
